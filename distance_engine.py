@@ -85,6 +85,61 @@ def live_osrm_distance_km(lat1, lon1, lat2, lon2, timeout=5):
 
 
 # ------------------------------------------------------------------
+# ROUTE GEOMETRY (the actual road-following path, not just start/end)
+# ------------------------------------------------------------------
+def get_route_geometry(lat1, lon1, lat2, lon2, mode="osmnx"):
+    """
+    Returns a list of (lat, lon) points tracing the real road path between
+    two points - used to draw an accurate route on the map instead of a
+    straight line. Falls back to a straight 2-point line if fetching fails.
+    """
+    if mode == "live_osrm":
+        try:
+            url = f"{OSRM_BASE_URL}/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
+            resp = requests.get(url, timeout=5)
+            data = resp.json()
+            coords = data["routes"][0]["geometry"]["coordinates"]  # [lon, lat] pairs
+            return [(lat, lon) for lon, lat in coords]
+        except Exception as e:
+            print(f"[distance_engine] Route geometry fetch failed ({e}), using straight line.")
+            return [(lat1, lon1), (lat2, lon2)]
+
+    elif mode == "osmnx":
+        try:
+            import osmnx as ox
+            import networkx as nx
+            G = _load_osmnx_graph()
+
+            node1 = ox.distance.nearest_nodes(G, lon1, lat1)
+            node2 = ox.distance.nearest_nodes(G, lon2, lat2)
+            print(f"  [debug] node1={node1}, node2={node2}")
+
+            if node1 == node2:
+                print("  [debug] WARNING: source and destination snapped to the SAME graph node!")
+                return [(lat1, lon1), (lat2, lon2)]
+
+            path_nodes = nx.shortest_path(G, node1, node2, weight="length")
+            print(f"  [debug] path has {len(path_nodes)} nodes")
+
+            if len(path_nodes) < 2:
+                print("  [debug] WARNING: path has fewer than 2 nodes, falling back")
+                return [(lat1, lon1), (lat2, lon2)]
+
+            return [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in path_nodes]
+
+        except nx.NetworkXNoPath:
+            print("  [debug] No path exists between these nodes in the graph (disconnected).")
+            return [(lat1, lon1), (lat2, lon2)]
+        except Exception as e:
+            print(f"  [debug] OSMnx route geometry failed: {type(e).__name__}: {e}")
+            return [(lat1, lon1), (lat2, lon2)]
+
+    else:
+        # haversine mode has no real path - just a straight line
+        return [(lat1, lon1), (lat2, lon2)]
+
+
+# ------------------------------------------------------------------
 # MAIN ENTRY POINT (what every other module should call)
 # ------------------------------------------------------------------
 def get_distance_km(lat1, lon1, lat2, lon2, mode="haversine"):
